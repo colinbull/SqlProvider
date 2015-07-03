@@ -245,9 +245,9 @@ module MySql =
         match retCols with
         | [||] -> com.ExecuteNonQuery() |> ignore; Unit
         | [|retCol|] ->
-            use reader = com.ExecuteReader()
             match retCol.TypeMapping.ProviderTypeName with
             | Some "cursor" -> 
+                use reader = com.ExecuteReader()
                 let result = SingleResultSet(retCol.Name, Sql.dataReaderToArray reader)
                 reader.NextResult() |> ignore
                 result
@@ -282,7 +282,7 @@ type internal MySqlProvider(resolutionPath, owner, referencedAssemblies) as this
             MySql.connect con (fun con ->
                 use reader = MySql.executeSql (sprintf "select TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE from INFORMATION_SCHEMA.TABLES where TABLE_SCHEMA = '%s'" MySql.owner) con
                 [ while reader.Read() do 
-                    let table ={ Schema = reader.GetString(0); Name = reader.GetString(1); Type=reader.GetString(2) } 
+                    let table ={ Schema = reader.GetString(0).ToLower(); Name = reader.GetString(1).ToLower(); Type=reader.GetString(2).ToLower() } 
                     if tableLookup.ContainsKey table.FullName = false then tableLookup.Add(table.FullName,table)
                     yield table ])
 
@@ -311,7 +311,7 @@ type internal MySqlProvider(resolutionPath, owner, referencedAssemblies) as this
                                              AND c.TABLE_SCHEMA = pk.TABLE_SCHEMA
                                              AND c.TABLE_NAME = pk.TABLE_NAME
                                              AND c.COLUMN_NAME = pk.COLUMN_NAME
-                                 WHERE c.TABLE_SCHEMA = @schema AND c.TABLE_NAME = @table
+                                 WHERE LOWER(c.TABLE_SCHEMA) = @schema AND LOWER(c.TABLE_NAME) = @table
                                  ORDER BY c.TABLE_SCHEMA,c.TABLE_NAME, c.ORDINAL_POSITION"
                use com = (this:>ISqlProvider).CreateCommand(con,baseQuery)               
                com.Parameters.Add((this:>ISqlProvider).CreateCommandParameter(QueryParameter.Create("@schema", 0), table.Schema)) |> ignore
@@ -331,7 +331,8 @@ type internal MySqlProvider(resolutionPath, owner, referencedAssemblies) as this
                          if col.IsPrimarKey && pkLookup.ContainsKey table.FullName = false then pkLookup.Add(table.FullName,col.Name)
                          yield col 
                       | _ -> ()]  
-               columnLookup.Add(table.FullName,columns)
+               if not(columns.IsEmpty) then
+                   columnLookup.Add(table.FullName,columns)
                con.Close()
                columns
         member __.GetRelationships(con,table) = 
@@ -354,13 +355,13 @@ type internal MySqlProvider(resolutionPath, owner, referencedAssemblies) as this
                                 AND KCU1.CONSTRAINT_NAME = RC.CONSTRAINT_NAME  "
 
             MySql.connect con (fun con ->
-            use reader = (MySql.executeSql (sprintf "%s WHERE RC.TABLE_NAME = '%s'" baseQuery table.Name ) con)
+            use reader = (MySql.executeSql (sprintf "%s WHERE LOWER(RC.TABLE_NAME) = '%s'" baseQuery table.Name ) con)
             let children =
                 [ while reader.Read() do 
                     yield { Name = reader.GetString(0); PrimaryTable=Table.CreateFullName(reader.GetString(2),reader.GetString(1)); PrimaryKey=reader.GetString(3)
                             ForeignTable=Table.CreateFullName(reader.GetString(5),reader.GetString(4)); ForeignKey=reader.GetString(6) } ] 
             reader.Dispose()
-            use reader = MySql.executeSql (sprintf "%s WHERE RC.REFERENCED_TABLE_NAME = '%s'" baseQuery table.Name ) con
+            use reader = MySql.executeSql (sprintf "%s WHERE LOWER(RC.REFERENCED_TABLE_NAME) = '%s'" baseQuery table.Name ) con
             let parents =
                 [ while reader.Read() do 
                     yield { Name = reader.GetString(0); PrimaryTable=Table.CreateFullName(reader.GetString(2),reader.GetString(1)); PrimaryKey=reader.GetString(3)
@@ -602,8 +603,8 @@ type internal MySqlProvider(resolutionPath, owner, referencedAssemblies) as this
                     pk)
 
                 data |> Array.map snd |> Array.iter (cmd.Parameters.Add >> ignore)
-                cmd.Parameters.Add pkParam |> ignore
                 cmd.CommandText <- sb.ToString()
+                cmd.Parameters.Add pkParam |> ignore
                 cmd
             
             let createDeleteCommand (entity:SqlEntity) =
@@ -617,9 +618,9 @@ type internal MySqlProvider(resolutionPath, owner, referencedAssemblies) as this
                     | Some v -> v
                     | None -> failwith "Error - you cannot delete an entity that does not have a primary key."
                 let p = (this :> ISqlProvider).CreateCommandParameter(QueryParameter.Create("@pk", 0),pkValue)
-                cmd.Parameters.Add(p) |> ignore
-                ~~(sprintf "DELETE FROM %s WHERE %s = @id" (entity.Table.FullName.Replace("[","`").Replace("]","`")) pk )
+                ~~(sprintf "DELETE FROM %s WHERE %s = @pk" (entity.Table.FullName.Replace("[","`").Replace("]","`")) pk )
                 cmd.CommandText <- sb.ToString()
+                cmd.Parameters.Add(p) |> ignore
                 cmd
 
             use scope = new Transactions.TransactionScope()
